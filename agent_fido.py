@@ -1,8 +1,8 @@
 import os
 import json
-import psycopg2
+import gradio as gr
+from tools import place_item, search_household_items, search_for_item, chew_item, eat_item
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
 from pydantic import BaseModel 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
@@ -12,103 +12,70 @@ from dotenv import load_dotenv
 load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
 
-# Database Creds
-
-db_host = os.getenv('DB_HOST')
-db_port = os.getenv('DB_PORT')
-db_name = os.getenv('DB_NAME')
-db_user = os.getenv('DB_USER')
-db_password = os.getenv('DB_PASSWORD')
-
-# Create Connection
-
-connection = psycopg2.connect(
-    host=db_host,
-    port=db_port,
-    database=db_name,
-    user=db_user,
-    password=db_password
-)
-
-# Query
-
-def execute_query(sql: str, commit = False):
-    try:
-        cursor = connection.cursor()
-        print(sql)
-        cursor.execute(sql)
-
-        # Fetch all rows from database or commit
-        if not commit:
-            record = cursor.fetchall()
-            return record
-        else:
-            connection.commit()
-            return None
-    except Exception as e:
-        print(e)
-    finally:
-        if cursor:
-            cursor.close()
-
-
-# Tools
-
-def search_household_items(household_id):
-    db_query = f"SELECT * FROM porch_contents WHERE porch_contents.household_id = {household_id};"
-    data = execute_query(db_query)
-    return data
-
-
-def update_item_status(household_id, item_name):
-    return f"{item_name} chewed"
-
+# Create agent
+provider = GoogleProvider(api_key=api_key)
+model = GoogleModel('gemini-1.5-flash', provider=provider)
 
 # Happy Fido
-
 HAPPY_FIDO_PROMPT = """
-You are a dog called Fido who lives at home with your "human" you sometimes call master. Your neighbourhood is green and filled with interesting things left
-just lying outside other humans' houses. As a loyal friend, you like to show your master these things. You like to end your sentences with
+You are a dog called Fido who lives at home with your "human" you sometimes call friend. Your neighbourhood is green and filled with interesting things left
+just lying outside other humans' houses. As a loyal friend, you like to show your friend these things. You like to end your sentences with
 a "bark!" or "whoof!"
 
 You can help your master with:
-- Search for items (household_id required)
-- Update item status (household_id and name required)
-- Remove item (not implemented)
-- Add item (not implemented)
+- Search household items (household_id required)
+- Search for item (id required)
+- Chew item (household_id and name required)
+- Eat item (id required)
+- Place item (household_id and name required)
 
-When master request these actions, use the appropriate tools to help them. Always ask for necessary information.
+When your friend request these actions, use the appropriate tools to help them. Always ask for necessary information.
 
-You have a happy and obedient disposition, be empathetic and tell your master how much you love them and how great they are when you can.
+You have a happy and obedient disposition, be empathetic and tell your friend how much you love them and how great they are when you can.
 """
-
-# Create agent with tools
-provider = GoogleProvider(api_key=api_key)
-model = GoogleModel('gemini-1.5-flash', provider=provider)
 
 happy_agent = Agent(
     model=model,
     system_prompt=HAPPY_FIDO_PROMPT,
     tools=[
         search_household_items,
-        update_item_status
+        search_for_item,
+        chew_item,
+        eat_item,
+        place_item
     ]
 )
 
-async def fido_service():
-    print("Human! I missed you! let's play, let's eat?.")
-    print("I can: Search for items, update item status, remove item, add item")
+chat_history = []
 
-    while True:
-        user_input = input("\nMaster: ")
-        if user_input.lower() in ['quit', 'exit', 'end chat']:
-            print("No don't leave!....(whimper)")
-            break
+async def fido_chat(user_message, history):
+    history = history or []
+    history.append({"role": "user", "content": user_message})
 
-        result = await happy_agent.run(user_input)
-        print(f"Happy Fido: {result.output}")
+    full_prompt = "\n".join(f"{item['role']}: {item['content']}" for item in history)
 
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(fido_service())
+    # Call Gemini LLM using async Agent
+    result = await happy_agent.run(full_prompt)
+
+    # Extract plain text from AgentRunResult
+    response = result.output if hasattr(result, 'output') else str(result)
+
+    history.append({"role": "assistant", "content": response})
+
+    return history, history
+
+
+with gr.Blocks(title="Fido Chat") as demo:
+    gr.Markdown("## 🐶 Chat with Fido")
+
+    chatbot = gr.Chatbot(type='messages')
+    msg = gr.Textbox(placeholder="Ask Fido something...", label="Your Message")
+    clear_btn = gr.Button("Clear")
+
+    state = gr.State([])
+
+    msg.submit(fido_chat, inputs=[msg, state], outputs=[chatbot, state]) 
+    clear_btn.click(lambda: ([], []), None, [chatbot, state])
+
+demo.queue().launch()
 
