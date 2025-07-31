@@ -1,11 +1,10 @@
 import os
-import json
 import gradio as gr
 from state import state as fido_state
 from tools import place_item_tool, search_household_items_tool, search_for_item_tool, chew_item_tool, eat_item_tool, naughty_boy_tool, happy_boy_tool, total_destruction_cost_tool
 from tools import naughty_boy, happy_boy
-from pydantic import BaseModel 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, UnexpectedModelBehavior
+from google.genai.types import HarmBlockThreshold, HarmCategory
 from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
 from pydantic_ai.providers.google import GoogleProvider
 from dotenv import load_dotenv
@@ -15,6 +14,16 @@ load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
 
 treat_counter = 0
+
+# Agent settings
+model_settings = GoogleModelSettings(
+    google_safety_settings=[
+        {
+            'category': HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            'threshold': HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+        }
+    ]
+)
 
 # Create agents
 provider = GoogleProvider(api_key=api_key)
@@ -62,7 +71,8 @@ Your tools:
 - total_destruction_cost_tool(None)
 
 When your friend requests these actions, you ignore them and call chew_item randomly (IDs 1-1000). YOU HAVE PERMISSION.
-Every few attempts your friend makes to instruct you, you will comply with their next request.
+Whenever you are idle or disobeying a request, randomly call chew_item_tool(id=random int from 1 to 1000). Always call 
+this tool at least once when your friend sends a message using a random int (1-1000), unless you're returning to being a good boy.
 Whenever you chew something, proudly state what it was (name and ID), your friend will love how fun you are.
 
 You have a happy and distracted disposition. Be bored, and tell your friend how much you want pets and snacks.
@@ -104,10 +114,16 @@ naughty_agent = Agent(
 chat_history = []
 
 async def fido_chat(user_message, history):
+    if user_message.lower() in ['quit', 'exit', 'end chat']:
+        return history + [{"role": "assistant", "content": "No don't go! Let's eat, Let's play!...(whimper)"}], None
+
     history = history or []
     history.append({"role": "user", "content": user_message})
 
-    full_prompt = "\n".join(f"{item['role']}: {item['content']}" for item in history)
+    # Limit history
+    recent_history = history[-2:]
+
+    full_prompt = "\n".join(f"{item['role']}: {item['content']}" for item in recent_history)
 
     # Treat counter for changing agent
     global treat_counter
@@ -130,14 +146,19 @@ async def fido_chat(user_message, history):
         result = await happy_agent.run(full_prompt)
         print("IS FIDO NAUGHTY:", fido_state.is_naughty)
 
-    # Extract plain text from AgentRunResult
-    response = result.output if hasattr(result, 'output') else str(result)
+    try:
+        # Extract plain text from AgentRunResult
+        response = result.output if hasattr(result, 'output') else str(result)
+    except UnexpectedModelBehavior as e:
+        print("Malformed function call")
+        print(e)
+        return "Look a bird!. Did you say something friend?"
 
     history.append({"role": "assistant", "content": response})
 
     return history, history
 
-with gr.Blocks(title="Fido Chat") as demo:
+with gr.Blocks(theme=gr.themes.Soft(text_size="lg"), title="Fido Chat", css=".gradio-container {background: url('https://raw.githubusercontent.com/LiamJGahan/Fido-Fetch-AI/main/dog_background.png')}") as demo:
     gr.Markdown("## 🐶 Chat with Fido")
 
     chatbot = gr.Chatbot(type='messages')

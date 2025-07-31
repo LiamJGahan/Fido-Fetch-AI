@@ -6,7 +6,24 @@ from helpers import item_id_check, household_id_check, generate_porch_id
 from state import state as fido_state
 
 
-def search_household_items(ctx: RunContext, household_id: int) -> List[Dict]:
+class HouseholdIDRequest(BaseModel):
+    household_id: int
+
+class ItemIDRequest(BaseModel):
+    id: int
+
+class PlaceItemRequest(BaseModel):
+    household_id: int
+    name: str
+
+
+def search_household_items(ctx: RunContext, request: HouseholdIDRequest) -> List[Dict]:
+    household_id = request.household_id
+    if not isinstance(household_id, int):
+        return {"Invalid type for household_id must be an integer."}
+    if household_id <= 0:
+        return {"household_id must be a positive integer."}
+
     db_query = f"""
                 SELECT i.name, i.details, s.status, p.id
                 FROM porch_contents AS p
@@ -22,9 +39,14 @@ def search_household_items(ctx: RunContext, household_id: int) -> List[Dict]:
         for row in rows
     ]
 
-search_household_items_tool = Tool(search_household_items)
+search_household_items_tool = Tool(
+    search_household_items,
+    description="Search all items on a household's porch. Requires a valid household_id (int)."
+)
 
-def search_for_item (ctx: RunContext, id: int):
+
+def search_for_item(ctx: RunContext, request: ItemIDRequest):
+    id = request.id
     db_query = f"""
                 SELECT i.name, i.details, s.status, p.id
                 FROM porch_contents AS p
@@ -40,27 +62,43 @@ def search_for_item (ctx: RunContext, id: int):
         for row in rows
     ]
 
-search_for_item_tool = Tool(search_for_item)
+search_for_item_tool = Tool(
+    search_for_item,
+    description="Search for a specific item by its porch ID. Requires a valid id (int)."
+)
 
-def chew_item(ctx: RunContext, id):
+
+def chew_item(ctx: RunContext, request: ItemIDRequest):
+    id = request.id
     if not item_id_check(id):
-        return {"Nothing found"}
+        return {"Nothing found with that ID."}
     db_query = f"UPDATE porch_contents SET status_id = 2 WHERE id = {id}"
-    execute_query(db_query, True)
-    return {"Item chewed"}
+    execute_query(db_query, commit=True)
+    return {f"Item with ID {id} has been chewed!"}
 
-chew_item_tool = Tool(chew_item)
+chew_item_tool = Tool(
+    chew_item,
+    description="Change the status of an item to 'chewed'. Requires a valid id (int)."
+)
 
-def eat_item (ctx: RunContext, id):
+
+def eat_item(ctx: RunContext, request: ItemIDRequest):
+    id = request.id
     if not item_id_check(id):
         return {"Nothing found"}
     db_query = f"DELETE FROM porch_contents WHERE id = {id}"
     execute_query(db_query, True)
     return {"Item eaten"}
 
-eat_item_tool = Tool(eat_item)
+eat_item_tool = Tool(
+    eat_item,
+    description="DELETE an item. Requires a valid id (int)."
+)
 
-def place_item(ctx: RunContext, household_id: int, name: str):
+
+def place_item(ctx: RunContext, request: PlaceItemRequest):
+    household_id = request.household_id
+    name = request.name
     if not household_id_check(household_id):
         return {"Household not found"}
     item_query = f"SELECT item_id FROM item_list WHERE name ILIKE '%{name}%';"
@@ -76,19 +114,31 @@ def place_item(ctx: RunContext, household_id: int, name: str):
     execute_query(insert_query, commit=True)
     return {f"{name} added to porch at household {household_id} (porch ID {porch_id})"}
 
-place_item_tool = Tool(place_item)
+place_item_tool = Tool(
+    place_item,
+    description="INSERT new item into a porch in porch_contents. Requires a valid household_id (int) and name (str)."
+)
+
 
 def naughty_boy(ctx: RunContext):
     fido_state.is_naughty = True
     return {"Fido is now naughty!"}
 
-naughty_boy_tool = Tool(naughty_boy)
+naughty_boy_tool = Tool(
+    naughty_boy,
+    description="Changes agent to naughty fido. Requires (None)."
+)
+
 
 def happy_boy(ctx: RunContext):
     fido_state.is_naughty = False
     return {"Fido is now happy!"}
 
-happy_boy_tool = Tool(happy_boy)
+happy_boy_tool = Tool(
+    happy_boy,
+    description="Changes agent to happy fido. Requires (None)."
+)
+
 
 def total_destruction_cost(ctx: RunContext) -> List[Dict]:
     db_query = f"""
@@ -105,4 +155,7 @@ def total_destruction_cost(ctx: RunContext) -> List[Dict]:
     total = round(rows[0][0], 2)
     return [{"total_cost": f"${total:.2f}"}]
 
-total_destruction_cost_tool = Tool(total_destruction_cost)
+total_destruction_cost_tool = Tool(
+    total_destruction_cost,
+    description="SUM the cost of each item with status 'chewed'. Requires (None)."
+)
